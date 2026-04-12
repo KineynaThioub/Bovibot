@@ -136,3 +136,4 @@ LLM_BASE_URL=http://localhost:11434/v1
 
 ## 📞 Contact
 Pr. Ahmath Bamba MBACKE | ahmathbamba.mbacke@esp.sn | +221 77 575 64 90
+# bovibot
