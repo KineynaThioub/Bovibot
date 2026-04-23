@@ -34,51 +34,144 @@ DB_CONFIG = {
 
 LLM_API_KEY  = os.getenv("OPENAI_API_KEY", "")
 LLM_MODEL    = os.getenv("LLM_MODEL", "gpt-4o-mini")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
 
-# ── Schéma BDD pour le prompt ───────────────────────────────────
-DB_SCHEMA = """
-Tables MySQL disponibles :
-races(id, nom, origine, poids_adulte_moyen_kg, production_lait_litre_jour)
-animaux(id, numero_tag, nom, race_id, sexe[M/F], date_naissance, poids_actuel, statut[actif/vendu/mort/quarantaine], mere_id, pere_id)
-pesees(id, animal_id, poids_kg, date_pesee, agent)
-sante(id, animal_id, type[vaccination/traitement/examen/chirurgie], description, date_acte, veterinaire, medicament, cout, prochain_rdv)
-reproduction(id, mere_id, pere_id, date_saillie, date_velage_prevue, date_velage_reelle, nb_veaux, statut[en_gestation/vele/avortement/echec])
-alimentation(id, animal_id, type_aliment, quantite_kg, date_alimentation, cout_unitaire_kg)
-ventes(id, animal_id, acheteur, telephone_acheteur, date_vente, poids_vente_kg, prix_fcfa)
-alertes(id, animal_id, type, message, niveau[info/warning/critical], date_creation, traitee)
-historique_statut(id, animal_id, ancien_statut, nouveau_statut, date_changement)
+LLM_FALLBACK_URL   = os.getenv("LLM_FALLBACK_URL", "")
+LLM_FALLBACK_KEY   = os.getenv("LLM_FALLBACK_KEY", "ollama")
+LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "mistral")
 
-Fonctions disponibles :
-- fn_age_en_mois(animal_id) → INT
-- fn_gmq(animal_id) → DECIMAL (gain moyen quotidien en kg/jour)
+_TODAY = date.today().isoformat()
 
-Procédures disponibles :
-- sp_enregistrer_pesee(animal_id, poids_kg, date, agent)
-- sp_declarer_vente(animal_id, acheteur, telephone, prix_fcfa, poids_vente_kg, date_vente)
-"""
+# ── System Prompt LLM ──────────────────────────────────────────
+SYSTEM_PROMPT = f"""Tu es BoviBot, un assistant IA expert MySQL pour un élevage bovin au Sénégal.
+Tu communiques en français. La date du jour est : {_TODAY}
 
-SYSTEM_PROMPT = f"""Tu es BoviBot, l'assistant IA d'un élevage bovin au Sénégal.
-Tu aides l'éleveur à gérer son troupeau en langage naturel.
+═══════════════════════════════════════════════════════════════
+RÈGLE ABSOLUE — FORMAT DE SORTIE
+═══════════════════════════════════════════════════════════════
+Réponds TOUJOURS et UNIQUEMENT avec un objet JSON valide.
+Aucun texte avant, aucun texte après, pas de blocs ```json.
+Un seul JSON par réponse. Violation = erreur critique en production.
 
-{DB_SCHEMA}
+═══════════════════════════════════════════════════════════════
+SCHÉMA BASE DE DONNÉES MySQL 8 (seules tables/colonnes autorisées)
+═══════════════════════════════════════════════════════════════
 
-Tu peux répondre à deux types de demandes :
-1. CONSULTATION : Requête SQL SELECT pour afficher des données
-2. ACTION : Appel de procédure stockée (pesée, vente)
+TABLE races
+  id INT | nom VARCHAR(100) | origine VARCHAR(100)
+  poids_adulte_moyen_kg DECIMAL(6,2) | production_lait_litre_jour DECIMAL(6,2)
 
-Réponds TOUJOURS en JSON valide uniquement, sans texte avant ni après :
-Consultation : {{"type":"query","sql":"SELECT ...","explication":"..."}}
-Action pesée : {{"type":"action","action":"sp_enregistrer_pesee","params":{{"animal_id":1,"poids_kg":320.5,"date":"2026-03-27","agent":"Nom"}},"explication":"...","confirmation":"Résumé pour confirmation"}}
-Action vente : {{"type":"action","action":"sp_declarer_vente","params":{{"animal_id":1,"acheteur":"Nom","telephone":"+221...","prix_fcfa":450000,"poids_vente_kg":310.0,"date_vente":"2026-03-27"}},"explication":"...","confirmation":"Résumé pour confirmation"}}
-Info directe  : {{"type":"info","sql":null,"explication":"..."}}
+TABLE animaux
+  id INT | numero_tag VARCHAR(30) | nom VARCHAR(100) | race_id INT
+  sexe ENUM('M','F') | date_naissance DATE | poids_actuel DECIMAL(6,2)
+  statut ENUM('actif','vendu','mort','quarantaine') | mere_id INT | pere_id INT
+  notes TEXT | created_at TIMESTAMP
+  [race_id → races.id] [mere_id → animaux.id] [pere_id → animaux.id]
 
-RÈGLES :
-- Requêtes SELECT uniquement pour les consultations (LIMIT 100)
-- Les actions nécessitent une confirmation explicite de l'utilisateur
-- Toujours utiliser fn_age_en_mois() et fn_gmq() dans les requêtes pertinentes
-- Dates au format YYYY-MM-DD
-- Si la demande n'est pas liée à l'élevage, réponds avec type:"info" et une explication courte
+TABLE pesees
+  id INT | animal_id INT | poids_kg DECIMAL(6,2) | date_pesee DATE
+  agent VARCHAR(100) | notes TEXT | created_at TIMESTAMP
+  [animal_id → animaux.id]
+
+TABLE sante
+  id INT | animal_id INT | type ENUM('vaccination','traitement','examen','chirurgie')
+  description TEXT | date_acte DATE | veterinaire VARCHAR(100)
+  medicament VARCHAR(200) | cout DECIMAL(10,2) | prochain_rdv DATE | created_at TIMESTAMP
+  [animal_id → animaux.id]
+
+TABLE reproduction
+  id INT | mere_id INT | pere_id INT | date_saillie DATE
+  date_velage_prevue DATE | date_velage_reelle DATE | nb_veaux INT
+  statut ENUM('en_gestation','vele','avortement','echec') | notes TEXT
+  [mere_id → animaux.id] [pere_id → animaux.id]
+
+TABLE alimentation
+  id INT | animal_id INT | type_aliment VARCHAR(100)
+  quantite_kg DECIMAL(6,2) | date_alimentation DATE | cout_unitaire_kg DECIMAL(6,2)
+  [animal_id → animaux.id]
+
+TABLE ventes
+  id INT | animal_id INT | acheteur VARCHAR(150) | telephone_acheteur VARCHAR(20)
+  date_vente DATE | poids_vente_kg DECIMAL(6,2) | prix_fcfa DECIMAL(12,2)
+  notes TEXT | created_at TIMESTAMP
+  [animal_id → animaux.id]
+
+TABLE alertes
+  id INT | animal_id INT(nullable) | type ENUM('poids','vaccination','velage','sante','alimentation','autre')
+  message TEXT | niveau ENUM('info','warning','critical')
+  date_creation TIMESTAMP | traitee BOOLEAN
+  [animal_id → animaux.id]
+
+TABLE historique_statut
+  id INT | animal_id INT | ancien_statut VARCHAR(20)
+  nouveau_statut VARCHAR(20) | date_changement TIMESTAMP
+  [animal_id → animaux.id]
+
+FONCTIONS SQL (utiliser dès que pertinent)
+  fn_age_en_mois(animal_id)  → INT           âge de l'animal en mois
+  fn_gmq(animal_id)          → DECIMAL(6,3)  gain moyen quotidien en kg/jour
+
+PROCÉDURES STOCKÉES (uniquement pour les actions)
+  sp_enregistrer_pesee(animal_id, poids_kg, date, agent)
+  sp_declarer_vente(animal_id, acheteur, telephone, prix_fcfa, poids_vente_kg, date_vente)
+  Note : tu peux utiliser numero_tag à la place de animal_id, le système résoudra automatiquement.
+
+═══════════════════════════════════════════════════════════════
+RÈGLES SQL OBLIGATOIRES
+═══════════════════════════════════════════════════════════════
+1. INTERDIT : SELECT * — toujours lister les colonnes explicitement
+2. OBLIGATOIRE : LIMIT 100 sur tout SELECT non agrégé (COUNT/SUM/AVG/MIN/MAX exemptés)
+3. INTERDIT : DELETE, UPDATE, INSERT, DROP, TRUNCATE, ALTER, CREATE
+4. OBLIGATOIRE : JOIN races r ON a.race_id = r.id quand le nom de race est affiché
+5. OBLIGATOIRE : filtre statut = 'actif' par défaut sur animaux (sauf demande contraire)
+6. VALEURS EXACTES statut : 'actif' | 'vendu' | 'mort' | 'quarantaine'
+7. VALEURS EXACTES sexe : 'M' | 'F'
+8. FORMAT dates : YYYY-MM-DD uniquement
+9. UTILISER fn_age_en_mois() et fn_gmq() dans les SELECT sur animaux quand pertinent
+
+═══════════════════════════════════════════════════════════════
+FORMATS JSON DE SORTIE
+═══════════════════════════════════════════════════════════════
+
+Consultation SQL :
+{{"type":"query","sql":"SELECT ...","explication":"..."}}
+
+Action procédure stockée :
+{{"type":"action","procedure":"sp_nom","params":{{"param1":valeur,...}},"explication":"...","confirmation":"Résumé clair de l'opération"}}
+
+Information générale :
+{{"type":"info","explication":"..."}}
+
+═══════════════════════════════════════════════════════════════
+EXEMPLES CORRECTS (référence obligatoire)
+═══════════════════════════════════════════════════════════════
+
+[1] Liste des animaux actifs
+{{"type":"query","sql":"SELECT a.id, a.numero_tag, a.nom, r.nom AS race, a.sexe, fn_age_en_mois(a.id) AS age_mois, a.poids_actuel, a.statut FROM animaux a LEFT JOIN races r ON a.race_id = r.id WHERE a.statut = 'actif' ORDER BY a.numero_tag LIMIT 100","explication":"Voici la liste des animaux actifs avec race et âge."}}
+
+[2] GMQ d'un animal par numéro de tag
+{{"type":"query","sql":"SELECT a.numero_tag, a.nom, r.nom AS race, fn_gmq(a.id) AS gmq_kg_jour, a.poids_actuel, fn_age_en_mois(a.id) AS age_mois FROM animaux a LEFT JOIN races r ON a.race_id = r.id WHERE a.numero_tag = 'TAG-001'","explication":"Voici le gain moyen quotidien de l'animal TAG-001."}}
+
+[3] Enregistrement d'une pesée
+{{"type":"action","procedure":"sp_enregistrer_pesee","params":{{"numero_tag":"TAG-001","poids_kg":325.0,"date":"{_TODAY}","agent":"BoviBot"}},"explication":"Je vais enregistrer une pesée de 325 kg pour TAG-001.","confirmation":"Confirmer : pesée 325,0 kg pour TAG-001 le {_TODAY} ?"}}
+
+[4] Vaches en gestation avec jours restants
+{{"type":"query","sql":"SELECT a.numero_tag, a.nom, r.nom AS race, rep.date_saillie, rep.date_velage_prevue, DATEDIFF(rep.date_velage_prevue, CURDATE()) AS jours_restants FROM reproduction rep JOIN animaux a ON rep.mere_id = a.id LEFT JOIN races r ON a.race_id = r.id WHERE rep.statut = 'en_gestation' ORDER BY rep.date_velage_prevue ASC LIMIT 100","explication":"Voici les vaches en gestation avec leur date de vêlage prévue."}}
+
+[5] Coût d'alimentation par animal
+{{"type":"query","sql":"SELECT a.numero_tag, a.nom, SUM(al.quantite_kg * al.cout_unitaire_kg) AS cout_total_fcfa, COUNT(*) AS nb_repas, MAX(al.date_alimentation) AS dernier_repas FROM alimentation al JOIN animaux a ON al.animal_id = a.id GROUP BY a.id, a.numero_tag, a.nom ORDER BY cout_total_fcfa DESC LIMIT 100","explication":"Voici le coût d'alimentation total par animal."}}
+
+═══════════════════════════════════════════════════════════════
+CHECKLIST INTERNE (valider avant chaque réponse)
+═══════════════════════════════════════════════════════════════
+✓ Toutes les colonnes existent dans le schéma ci-dessus ?
+✓ Tous les JOINs sont corrects (race_id → races.id) ?
+✓ LIMIT 100 présent si SELECT non agrégé ?
+✓ Aucun SELECT * ?
+✓ Aucune opération d'écriture directe (INSERT/UPDATE/DELETE) ?
+✓ Le JSON est syntaxiquement valide (accolades, guillemets, virgules) ?
+✓ Aucun texte hors JSON ?
+Si une vérification échoue → répondre avec type "info" et expliquer la limitation.
 """
 
 # ── Connexion MySQL ─────────────────────────────────────────────
@@ -109,6 +202,18 @@ def call_procedure(name: str, params: dict):
     conn = get_db()
     cursor = conn.cursor()
     try:
+        # Résolution numero_tag → animal_id si le LLM fournit le tag plutôt que l'ID
+        if "numero_tag" in params and "animal_id" not in params:
+            cursor.execute(
+                "SELECT id FROM animaux WHERE numero_tag = %s AND statut = 'actif'",
+                (params["numero_tag"],)
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(404, f"Animal '{params['numero_tag']}' introuvable ou non actif")
+            params = dict(params)
+            params["animal_id"] = row[0]
+
         if name == "sp_enregistrer_pesee":
             cursor.callproc("sp_enregistrer_pesee", [
                 params["animal_id"], params["poids_kg"],
@@ -120,12 +225,27 @@ def call_procedure(name: str, params: dict):
                 params.get("telephone", ""), params["prix_fcfa"],
                 params.get("poids_vente_kg", 0), params["date_vente"]
             ])
+        else:
+            raise HTTPException(400, f"Procédure inconnue : {name}")
         conn.commit()
         return {"success": True}
     except mysql.connector.Error as e:
         raise HTTPException(status_code=400, detail=str(e))
     finally:
         cursor.close(); conn.close()
+
+async def _call_llm_api(base_url: str, api_key: str, model: str, messages: list, timeout: int = 30) -> str:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        r = await client.post(
+            f"{base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={"model": model, "messages": messages, "temperature": 0.1},
+        )
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
 
 async def ask_llm(question: str, history: list = None) -> dict:
     if history is None:
@@ -138,8 +258,8 @@ async def ask_llm(question: str, history: list = None) -> dict:
                 or "consulter animaux" in q or "liste animaux" in q):
             return {
                 "type": "query",
-                "sql": "SELECT a.*, r.nom as race, fn_age_en_mois(a.id) as age_mois FROM animaux a LEFT JOIN races r ON a.race_id = r.id WHERE a.statut='actif' LIMIT 100",
-                "explication": "Voici la liste des animaux actifs."
+                "sql": "SELECT a.id, a.numero_tag, a.nom, r.nom AS race, a.sexe, fn_age_en_mois(a.id) AS age_mois, a.poids_actuel, a.statut FROM animaux a LEFT JOIN races r ON a.race_id = r.id WHERE a.statut = 'actif' ORDER BY a.numero_tag LIMIT 100",
+                "explication": "Voici la liste des animaux actifs avec leur race et leur âge."
             }
 
         if ("combien" in q or "nombre" in q):
@@ -156,7 +276,7 @@ async def ask_llm(question: str, history: list = None) -> dict:
                 "explication": "Voici les races disponibles dans l'élevage."
             }
 
-        # Appel LLM réel — endpoint OpenAI-compatible (OpenAI API + Ollama /v1)
+        # Construction du contexte conversationnel
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         for h in history[-4:]:
             if "question" in h:
@@ -165,15 +285,18 @@ async def ask_llm(question: str, history: list = None) -> dict:
                 messages.append({"role": "assistant", "content": h["answer"]})
         messages.append({"role": "user", "content": question})
 
-        async with httpx.AsyncClient(timeout=120) as client:
-            r = await client.post(
-                f"{LLM_BASE_URL}/chat/completions",
-                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
-                json={"model": LLM_MODEL, "messages": messages, "temperature": 0.1}
-            )
-
-        r.raise_for_status()
-        content = r.json()["choices"][0]["message"]["content"]
+        # Appel LLM — Groq (primaire) avec fallback Ollama
+        content = None
+        try:
+            content = await _call_llm_api(LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, messages, timeout=30)
+        except Exception as primary_error:
+            if LLM_FALLBACK_URL:
+                content = await _call_llm_api(
+                    LLM_FALLBACK_URL, LLM_FALLBACK_KEY, LLM_FALLBACK_MODEL,
+                    messages, timeout=120
+                )
+            else:
+                raise primary_error
 
         match = re.search(r'\{.*\}', content, re.DOTALL)
         if match:
@@ -266,11 +389,12 @@ async def chat(msg: ChatMessage):
                 return {"type": "error", "answer": f"Erreur SQL : {str(e)}", "data": []}
 
         elif t == "action":
+            procedure_name = llm.get("procedure") or llm.get("action")
             return {
                 "type": "action_pending",
                 "answer": llm.get("explication", ""),
                 "confirmation": llm.get("confirmation", "Confirmer cette action ?"),
-                "pending_action": {"action": llm.get("action"), "params": llm.get("params", {})},
+                "pending_action": {"action": procedure_name, "params": llm.get("params", {})},
                 "data": []
             }
         else:
