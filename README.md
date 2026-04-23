@@ -1,9 +1,9 @@
-# 🐄 BoviBot — Gestion d'Élevage Bovin avec IA + PL/SQL
+# BoviBot — Gestion d'Élevage Bovin avec IA + PL/SQL
 **Projet L3 — ESP/UCAD | Pr. Ahmath Bamba MBACKE**
 
 ---
 
-## 📁 Structure du projet
+## Structure du projet
 
 ```
 BoviBot/
@@ -22,7 +22,7 @@ BoviBot/
 
 ---
 
-## ⚙️ Installation locale
+## Installation locale
 
 ### 1. Cloner et configurer
 ```bash
@@ -49,12 +49,12 @@ Ouvrir `frontend/index.html` dans un navigateur, **ou** laisser FastAPI le servi
 
 ---
 
-## 🚀 Déploiement (Railway — recommandé)
+## Déploiement (Railway — recommandé)
 
-1. Créez un compte sur [railway.app](https://railway.app)
+1. << On a créez un compte sur [railway.app](https://railway.app)
 2. Ajoutez un service **MySQL** depuis le dashboard Railway
 3. Importez votre dépôt GitHub
-4. Dans les variables d'environnement, ajoutez :
+4. Dans les variables d'environnement, on a ajoutez :
    - `DB_HOST` → host fourni par Railway MySQL
    - `DB_USER`, `DB_PASSWORD`, `DB_NAME`
    - `OPENAI_API_KEY` → votre clé OpenAI
@@ -63,9 +63,9 @@ Ouvrir `frontend/index.html` dans un navigateur, **ou** laisser FastAPI le servi
    ```bash
    mysql -h $DB_HOST -u $DB_USER -p$DB_PASSWORD $DB_NAME < database/schema.sql
    ```
-6. Votre app sera accessible sur `https://bovibot.railway.app`
+6. App  accessible sur `https://bovibot.railway.app`
 
-### Alternative : Render
+### Render
 1. Créez un service Web sur [render.com](https://render.com)
 2. Build command : `pip install -r requirements.txt`
 3. Start command : `cd backend && uvicorn app:app --host 0.0.0.0 --port $PORT`
@@ -73,16 +73,10 @@ Ouvrir `frontend/index.html` dans un navigateur, **ou** laisser FastAPI le servi
 
 ---
 
-## 🤖 Configuration LLM
+## Configuration LLM
 
-### Option A — OpenAI (production)
-```env
-OPENAI_API_KEY=sk-...
-LLM_MODEL=gpt-4o-mini
-LLM_BASE_URL=https://api.openai.com/v1
-```
 
-### Option B — Ollama local (gratuit)
+### Ollama local
 ```bash
 # Installer Ollama
 curl -fsSL https://ollama.ai/install.sh | sh
@@ -97,7 +91,7 @@ LLM_BASE_URL=http://localhost:11434/v1
 
 ---
 
-## 📌 API Endpoints
+## API Endpoints
 
 | Méthode | Route | Description |
 |---------|-------|-------------|
@@ -120,7 +114,7 @@ LLM_BASE_URL=http://localhost:11434/v1
 
 ---
 
-## 🧪 Exemples de dialogues IA
+##  Exemples de dialogues IA
 
 **Consultation :**
 > "Quels animaux ont un GMQ inférieur à 0.3 ?"
@@ -134,6 +128,12 @@ LLM_BASE_URL=http://localhost:11434/v1
 
 ---
 
-## 📞 Contact
-Pr. Ahmath Bamba MBACKE | ahmathbamba.mbacke@esp.sn | +221 77 575 64 90
+##  IA utilisees pour assistance
+
+> ChatGPT
+> Claude
+> Gemini
+
+
+
 # bovibot
