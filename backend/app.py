@@ -30,6 +30,7 @@ DB_CONFIG = {
     "user":     os.getenv("DB_USER", "root"),
     "password": os.getenv("DB_PASSWORD", ""),
     "database": os.getenv("DB_NAME", "bovibot"),
+    "charset":  "utf8mb4",
 }
 
 LLM_API_KEY  = os.getenv("OPENAI_API_KEY", "")
