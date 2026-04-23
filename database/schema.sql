@@ -171,8 +171,9 @@ CREATE PROCEDURE sp_declarer_vente(
     IN p_date_vente  DATE
 )
 BEGIN
-    -- Vérifier que l'animal est actif
     DECLARE v_statut VARCHAR(20);
+
+    -- Vérifier que l'animal est actif
     SELECT statut INTO v_statut FROM animaux WHERE id = p_animal_id;
 
     IF v_statut != 'actif' THEN
@@ -298,20 +299,38 @@ BEGIN
       );
 END$$
 
--- Event hebdomadaire : rapport croissance (insère une alerte globale résumée)
+-- Event hebdomadaire : rapport croissance
 CREATE EVENT evt_rapport_croissance
 ON SCHEDULE EVERY 1 WEEK
 STARTS CURRENT_TIMESTAMP
 DO
 BEGIN
-    DECLARE v_nb_animaux INT;
-    DECLARE v_gmq_moyen  DECIMAL(6,3);
+    DECLARE v_nb_animaux   INT DEFAULT 0;
+    DECLARE v_gmq_moyen    DECIMAL(6,3) DEFAULT 0;
+    DECLARE v_nb_alertes   INT DEFAULT 0;
+    DECLARE v_nb_gestation INT DEFAULT 0;
 
     SELECT COUNT(*) INTO v_nb_animaux FROM animaux WHERE statut = 'actif';
 
+    SELECT ROUND(AVG(fn_gmq(id)), 3)
+    INTO v_gmq_moyen
+    FROM animaux WHERE statut = 'actif';
+
+    SELECT COUNT(*) INTO v_nb_alertes
+    FROM alertes WHERE traitee = FALSE AND niveau IN ('warning', 'critical');
+
+    SELECT COUNT(*) INTO v_nb_gestation
+    FROM reproduction WHERE statut = 'en_gestation';
+
     INSERT INTO alertes (animal_id, type, message, niveau)
     VALUES (NULL, 'autre',
-        CONCAT('Rapport hebdo : ', v_nb_animaux, ' animaux actifs. Consultez le tableau de bord pour les détails.'),
+        CONCAT(
+            'Rapport hebdomadaire — ',
+            v_nb_animaux, ' animaux actifs | ',
+            'GMQ moyen : ', COALESCE(v_gmq_moyen, 0), ' kg/j | ',
+            v_nb_gestation, ' gestation(s) en cours | ',
+            v_nb_alertes, ' alerte(s) non traitée(s)'
+        ),
         'info');
 END$$
 

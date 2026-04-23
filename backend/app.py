@@ -127,83 +127,65 @@ def call_procedure(name: str, params: dict):
     finally:
         cursor.close(); conn.close()
 
-async def ask_llm(question: str, history: list = []) -> dict:
+async def ask_llm(question: str, history: list = None) -> dict:
+    if history is None:
+        history = []
     try:
         q = question.lower().strip()
 
-        # Liste animaux
-        if (
-            "animaux actifs" in q
-            or "liste les animaux" in q
-            or "consulter animaux" in q
-            or "liste animaux" in q
-        ):
+        # Raccourcis hardcodés pour les questions les plus fréquentes
+        if ("animaux actifs" in q or "liste les animaux" in q
+                or "consulter animaux" in q or "liste animaux" in q):
             return {
                 "type": "query",
-                "sql": "SELECT * FROM animaux WHERE statut='actif' LIMIT 100",
+                "sql": "SELECT a.*, r.nom as race, fn_age_en_mois(a.id) as age_mois FROM animaux a LEFT JOIN races r ON a.race_id = r.id WHERE a.statut='actif' LIMIT 100",
                 "explication": "Voici la liste des animaux actifs."
             }
 
-        # Nombre animaux
-        if (
-            "combien" in q
-            or "nombre" in q
-        ):
+        if ("combien" in q or "nombre" in q):
             return {
                 "type": "query",
                 "sql": "SELECT COUNT(*) as total FROM animaux WHERE statut='actif'",
                 "explication": "Voici le nombre d'animaux actifs."
             }
 
-        # Liste races
-        if (
-            "race" in q
-            or "races" in q
-        ):
+        if ("race" in q or "races" in q):
             return {
                 "type": "query",
-                "sql": "SELECT DISTINCT race FROM animaux",
-                "explication": "Voici les races disponibles."
+                "sql": "SELECT id, nom, origine, poids_adulte_moyen_kg, production_lait_litre_jour FROM races ORDER BY nom",
+                "explication": "Voici les races disponibles dans l'élevage."
             }
 
-            # Sinon on passe à Ollama
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": question}
-            ]
+        # Appel LLM réel — endpoint OpenAI-compatible (OpenAI API + Ollama /v1)
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for h in history[-4:]:
+            if "question" in h:
+                messages.append({"role": "user", "content": h["question"]})
+            if "answer" in h:
+                messages.append({"role": "assistant", "content": h["answer"]})
+        messages.append({"role": "user", "content": question})
 
-            async with httpx.AsyncClient(timeout=120) as client:
-                r = await client.post(
-                    f"{LLM_BASE_URL}/api/chat",
-                    json={
-                        "model": LLM_MODEL,
-                        "messages": messages,
-                        "stream": False
-                    }
-                )
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(
+                f"{LLM_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+                json={"model": LLM_MODEL, "messages": messages, "temperature": 0.1}
+            )
 
-            r.raise_for_status()
-            result = r.json()
+        r.raise_for_status()
+        content = r.json()["choices"][0]["message"]["content"]
 
-            content = result["message"]["content"]
-
-            match = re.search(r'\{.*\}', content, re.DOTALL)
-
-            if match:
+        match = re.search(r'\{.*\}', content, re.DOTALL)
+        if match:
+            try:
                 return json.loads(match.group())
+            except json.JSONDecodeError:
+                return {"type": "info", "explication": content}
 
-            return {
-                "type": "info",
-                "answer": content,
-                "data": []
-            }
+        return {"type": "info", "explication": content}
 
     except Exception as e:
-        return {
-            "type": "info",
-            "answer": f"Erreur IA : {str(e)}",
-            "data": []
-        }
+        return {"type": "info", "explication": f"Je n'ai pas pu traiter cette demande : {str(e)}"}
 
 # ── Modèles Pydantic ────────────────────────────────────────────
 class ChatMessage(BaseModel):
@@ -326,17 +308,20 @@ def get_animaux(
     sexe: Optional[str] = Query(None),
     race_id: Optional[int] = Query(None),
 ):
+    STATUTS_VALIDES = {'actif', 'vendu', 'mort', 'quarantaine'}
+    SEXES_VALIDES = {'M', 'F'}
+
     conditions = []
-    if statut:
+    if statut and statut in STATUTS_VALIDES:
         conditions.append(f"a.statut = '{statut}'")
     else:
         conditions.append("a.statut = 'actif'")
-    if sexe:
+    if sexe and sexe in SEXES_VALIDES:
         conditions.append(f"a.sexe = '{sexe}'")
     if race_id:
         conditions.append(f"a.race_id = {race_id}")
     if search:
-        s = search.replace("'", "''")
+        s = search.replace("'", "''").replace("\\", "\\\\")[:100]
         conditions.append(f"(a.numero_tag LIKE '%{s}%' OR a.nom LIKE '%{s}%')")
 
     where = "WHERE " + " AND ".join(conditions)
@@ -425,6 +410,17 @@ def get_pesees(animal_id: int):
         SELECT * FROM pesees WHERE animal_id={animal_id} ORDER BY date_pesee DESC LIMIT 50
     """)
 
+@app.get("/api/animaux/{animal_id}/historique")
+def get_historique_statut(animal_id: int):
+    return execute_query(f"""
+        SELECT h.*, a.numero_tag, a.nom as animal_nom
+        FROM historique_statut h
+        JOIN animaux a ON h.animal_id = a.id
+        WHERE h.animal_id = {animal_id}
+        ORDER BY h.date_changement DESC
+        LIMIT 50
+    """)
+
 @app.post("/api/pesees")
 def add_pesee(data: PeseeCreate):
     conn = get_db()
@@ -471,8 +467,9 @@ def add_sante(data: SanteCreate):
 # ── Routes ALERTES ───────────────────────────────────────────────
 @app.get("/api/alertes")
 def get_alertes(niveau: Optional[str] = Query(None)):
+    NIVEAUX_VALIDES = {'info', 'warning', 'critical'}
     where = "WHERE al.traitee=FALSE"
-    if niveau:
+    if niveau and niveau in NIVEAUX_VALIDES:
         where += f" AND al.niveau='{niveau}'"
     return execute_query(f"""
         SELECT al.*, a.numero_tag, a.nom as animal_nom
@@ -554,6 +551,56 @@ def add_vente(data: VenteCreate):
         raise HTTPException(400, str(e))
     finally:
         cursor.close(); conn.close()
+
+# ── Routes ALIMENTATION ───────────────────────────────────────────
+class AlimentationCreate(BaseModel):
+    animal_id: int
+    type_aliment: str
+    quantite_kg: float
+    date_alimentation: str
+    cout_unitaire_kg: float = 0.0
+
+@app.get("/api/alimentation")
+def get_alimentation(animal_id: Optional[int] = Query(None)):
+    where = f"WHERE al.animal_id = {animal_id}" if animal_id else ""
+    return execute_query(f"""
+        SELECT al.*, a.numero_tag, a.nom as animal_nom,
+               ROUND(al.quantite_kg * al.cout_unitaire_kg, 2) as cout_total
+        FROM alimentation al
+        LEFT JOIN animaux a ON al.animal_id = a.id
+        {where}
+        ORDER BY al.date_alimentation DESC
+        LIMIT 100
+    """)
+
+@app.post("/api/alimentation", status_code=201)
+def add_alimentation(data: AlimentationCreate):
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO alimentation (animal_id, type_aliment, quantite_kg,
+                                      date_alimentation, cout_unitaire_kg)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (data.animal_id, data.type_aliment, data.quantite_kg,
+              data.date_alimentation, data.cout_unitaire_kg))
+        conn.commit()
+        return {"success": True, "id": cursor.lastrowid}
+    finally:
+        cursor.close(); conn.close()
+
+@app.get("/api/alimentation/stats")
+def get_alimentation_stats():
+    return execute_query("""
+        SELECT a.numero_tag, a.nom,
+               ROUND(SUM(al.quantite_kg * al.cout_unitaire_kg), 0) as cout_total_fcfa,
+               COUNT(*) as nb_repas,
+               MAX(al.date_alimentation) as dernier_repas
+        FROM alimentation al
+        JOIN animaux a ON al.animal_id = a.id
+        GROUP BY a.id, a.numero_tag, a.nom
+        ORDER BY cout_total_fcfa DESC
+    """)
 
 # ── Routes RACES ──────────────────────────────────────────────────
 @app.get("/api/races")
